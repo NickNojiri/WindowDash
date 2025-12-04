@@ -8,12 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Source files
-file(GLOB SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 # Executable for GUI version
 add_executable(resizer_gui ${SRC_FILES})
 
-target_link_libraries(resizer_gui user32 comctl32 gdi32 pdh psapi)
+target_link_libraries(resizer_gui user32 comctl32 gdi32 pdh psapi comdlg32)
 
 # Copy resources (icons) to output directory
 add_custom_command(TARGET resizer_gui POST_BUILD

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <string>
 
 WindowManager::WindowManager() { RefreshWindowList(); }
 
@@ -70,6 +71,13 @@ void WindowManager::TileWindows(HWND owner) {
   int screenH = workArea.bottom - workArea.top;
 
   int count = static_cast<int>(m_visibleWindows.size());
+
+  // Debug logging
+  char debugBuf[256];
+  sprintf(debugBuf, "[WindowDash] Tiling %d windows. Screen: %d,%d %dx%d\n",
+          count, screenX, screenY, screenW, screenH);
+  OutputDebugString(debugBuf);
+
   int cols = static_cast<int>(std::ceil(std::sqrt(count)));
   int rows = static_cast<int>(std::ceil((double)count / cols));
 
@@ -86,6 +94,10 @@ void WindowManager::TileWindows(HWND owner) {
     int col = i % cols;
     int x = screenX + (col * winW);
     int y = screenY + (row * winH);
+
+    sprintf(debugBuf, "[WindowDash] Window %d: %s\n", i,
+            m_visibleWindows[i].title.c_str());
+    OutputDebugString(debugBuf);
 
     if (count == 3) {
       if (i == 0) {

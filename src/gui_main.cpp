@@ -1,12 +1,13 @@
 #include "Analytics.h"
-#include "MacroManager.h"
 #include "SystemMonitor.h"
 #include "WindowManager.h"
+#include "bookmarks/BookmarkManager.h"
 #include <commctrl.h>
 #include <cstdio>
 #include <cstring>
 #include <vector>
 #include <windows.h>
+
 
 // Link with comctl32.lib
 // #pragma comment(lib, "comctl32.lib")
@@ -23,9 +24,11 @@
 #define ID_LABEL_CPU 9
 #define ID_LABEL_RAM 10
 #define ID_LISTBOX_STATS 11
-#define ID_BTN_ADD_MACRO 12
-#define ID_BTN_LAUNCH_MACROS 13
-#define ID_LISTBOX_MACROS 14
+#define ID_BTN_ADD_BOOKMARK 12
+#define ID_BTN_LAUNCH_BOOKMARKS 13
+#define ID_LISTBOX_BOOKMARKS 14
+#define ID_BTN_TOGGLE_STATS 15
+#define ID_BTN_TOGGLE_ANALYTICS 16
 #define ID_TIMER_REFRESH 1001
 
 #define ID_HOTKEY_TILE 2001
@@ -35,7 +38,7 @@
 WindowManager wm;
 SystemMonitor sysMon;
 Analytics analytics;
-MacroManager macroMgr;
+BookmarkManager bookmarkMgr;
 HWND hLabelCount;
 HWND hLabelCpu;
 HWND hLabelRam;
@@ -43,12 +46,89 @@ HWND hStatusBar;
 HWND hCheckboxTop;
 HWND hListBox;
 HWND hListBoxStats;
-HWND hListBoxMacros;
+HWND hListBoxBookmarks;
 HWND hMainWnd;
+HWND hBtnToggleStats;
+HWND hBtnToggleAnalytics;
+HWND hLabelStatsTitle;
+HWND hLabelAnalyticsTitle;
+HWND hLabelBookmarksTitle;
+HWND hBtnAddBookmark;
+HWND hBtnLaunchBookmarks;
+HWND hBtnTile;
+HWND hBtnFocus;
+HWND hBtnSwitch;
+
 bool isFocusMode = false;
+bool isStatsExpanded = true;
+bool isAnalyticsExpanded = true;
 
 void UpdateStatus(const char *message) {
   SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)message);
+}
+
+void UpdateLayout() {
+  int y = 10;
+
+  // --- System Stats ---
+  SetWindowPos(hLabelStatsTitle, NULL, 30, y, 200, 20, SWP_NOZORDER);
+  SetWindowPos(hBtnToggleStats, NULL, 10, y, 20, 20, SWP_NOZORDER);
+  SetWindowText(hBtnToggleStats, isStatsExpanded ? "v" : ">");
+  y += 25;
+
+  if (isStatsExpanded) {
+    ShowWindow(hLabelCpu, SW_SHOW);
+    ShowWindow(hLabelRam, SW_SHOW);
+    SetWindowPos(hLabelCpu, NULL, 20, y, 100, 20, SWP_NOZORDER);
+    SetWindowPos(hLabelRam, NULL, 130, y, 100, 20, SWP_NOZORDER);
+    y += 25;
+  } else {
+    ShowWindow(hLabelCpu, SW_HIDE);
+    ShowWindow(hLabelRam, SW_HIDE);
+  }
+
+  // --- Controls ---
+  y += 10;
+  SetWindowPos(hBtnTile, NULL, 10, y, 105, 30, SWP_NOZORDER);
+  SetWindowPos(hBtnFocus, NULL, 125, y, 105, 30, SWP_NOZORDER);
+  y += 40;
+
+  SetWindowPos(hLabelCount, NULL, 10, y, 220, 25, SWP_NOZORDER);
+  y += 30;
+
+  SetWindowPos(hCheckboxTop, NULL, 10, y, 180, 25, SWP_NOZORDER);
+  y += 30;
+
+  // --- Window List ---
+  SetWindowPos(hListBox, NULL, 10, y, 220, 150, SWP_NOZORDER);
+  y += 160;
+
+  SetWindowPos(hBtnSwitch, NULL, 10, y, 220, 30, SWP_NOZORDER);
+  y += 40;
+
+  // --- Analytics ---
+  SetWindowPos(hLabelAnalyticsTitle, NULL, 30, y, 200, 20, SWP_NOZORDER);
+  SetWindowPos(hBtnToggleAnalytics, NULL, 10, y, 20, 20, SWP_NOZORDER);
+  SetWindowText(hBtnToggleAnalytics, isAnalyticsExpanded ? "v" : ">");
+  y += 25;
+
+  if (isAnalyticsExpanded) {
+    ShowWindow(hListBoxStats, SW_SHOW);
+    SetWindowPos(hListBoxStats, NULL, 10, y, 220, 80, SWP_NOZORDER);
+    y += 90;
+  } else {
+    ShowWindow(hListBoxStats, SW_HIDE);
+  }
+
+  // --- Bookmarks ---
+  SetWindowPos(hLabelBookmarksTitle, NULL, 10, y, 220, 20, SWP_NOZORDER);
+  y += 20;
+
+  SetWindowPos(hListBoxBookmarks, NULL, 10, y, 220, 60, SWP_NOZORDER);
+  y += 70;
+
+  SetWindowPos(hBtnAddBookmark, NULL, 10, y, 105, 30, SWP_NOZORDER);
+  SetWindowPos(hBtnLaunchBookmarks, NULL, 125, y, 105, 30, SWP_NOZORDER);
 }
 
 void RefreshWindowList() {
@@ -98,6 +178,9 @@ void RefreshWindowList() {
 }
 
 void UpdateSystemStats() {
+  if (!isStatsExpanded)
+    return;
+
   double cpu = sysMon.GetCpuUsage();
   int ram = sysMon.GetMemoryUsagePercentage();
 
@@ -111,6 +194,9 @@ void UpdateSystemStats() {
 }
 
 void UpdateAnalytics() {
+  if (!isAnalyticsExpanded)
+    return;
+
   analytics.Update();
 
   SendMessage(hListBoxStats, LB_RESETCONTENT, 0, 0);
@@ -122,9 +208,9 @@ void UpdateAnalytics() {
   }
 }
 
-void UpdateMacroList() {
-  SendMessage(hListBoxMacros, LB_RESETCONTENT, 0, 0);
-  const auto &programs = macroMgr.GetPrograms();
+void UpdateBookmarkList() {
+  SendMessage(hListBoxBookmarks, LB_RESETCONTENT, 0, 0);
+  const auto &programs = bookmarkMgr.GetBookmarks();
   for (const auto &path : programs) {
     // Extract filename from path for display
     std::string filename = path;
@@ -132,11 +218,11 @@ void UpdateMacroList() {
     if (lastSlash != std::string::npos) {
       filename = path.substr(lastSlash + 1);
     }
-    SendMessage(hListBoxMacros, LB_ADDSTRING, 0, (LPARAM)filename.c_str());
+    SendMessage(hListBoxBookmarks, LB_ADDSTRING, 0, (LPARAM)filename.c_str());
   }
 }
 
-void AddMacro() {
+void AddBookmark() {
   char filename[MAX_PATH] = "";
   OPENFILENAME ofn;
   ZeroMemory(&ofn, sizeof(ofn));
@@ -148,9 +234,9 @@ void AddMacro() {
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
 
   if (GetOpenFileName(&ofn)) {
-    macroMgr.AddProgram(filename);
-    UpdateMacroList();
-    UpdateStatus("Program added to workspace.");
+    bookmarkMgr.AddBookmark(filename);
+    UpdateBookmarkList();
+    UpdateStatus("Bookmark added.");
   }
 }
 
@@ -200,8 +286,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     RegisterHotKey(hwnd, ID_HOTKEY_FOCUS, MOD_ALT | MOD_SHIFT, 'F');
 
     // --- Stats Panel (Top) ---
-    CreateWindow("STATIC", "System Stats", WS_VISIBLE | WS_CHILD | SS_CENTER,
-                 10, 10, 220, 20, hwnd, NULL, NULL, NULL);
+    hBtnToggleStats =
+        CreateWindow("BUTTON", "v", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10,
+                     10, 20, 20, hwnd, (HMENU)ID_BTN_TOGGLE_STATS,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+    hLabelStatsTitle =
+        CreateWindow("STATIC", "System Stats", WS_VISIBLE | WS_CHILD | SS_LEFT,
+                     30, 10, 200, 20, hwnd, NULL, NULL, NULL);
 
     hLabelCpu =
         CreateWindow("STATIC", "CPU: -", WS_VISIBLE | WS_CHILD | SS_LEFT, 20,
@@ -212,15 +304,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                      35, 100, 20, hwnd, (HMENU)ID_LABEL_RAM, NULL, NULL);
 
     // --- Controls ---
-    CreateWindow("BUTTON", "Tile Grid",
-                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10, 70,
-                 105, 30, hwnd, (HMENU)ID_BUTTON_TILE,
-                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+    hBtnTile =
+        CreateWindow("BUTTON", "Tile Grid",
+                     WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 10,
+                     70, 105, 30, hwnd, (HMENU)ID_BUTTON_TILE,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    CreateWindow("BUTTON", "Focus Mode",
-                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 125, 70,
-                 105, 30, hwnd, (HMENU)ID_BUTTON_FOCUS,
-                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+    hBtnFocus =
+        CreateWindow("BUTTON", "Focus Mode",
+                     WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 125,
+                     70, 105, 30, hwnd, (HMENU)ID_BUTTON_FOCUS,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
     // Label Count
     hLabelCount = CreateWindow(
@@ -242,9 +336,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                      10, 170, 220, 150, hwnd, (HMENU)ID_LISTBOX,
                      (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    // Analytics Label
-    CreateWindow("STATIC", "Top Apps (Time)", WS_VISIBLE | WS_CHILD | SS_CENTER,
-                 10, 330, 220, 20, hwnd, NULL, NULL, NULL);
+    // Switch Button
+    hBtnSwitch =
+        CreateWindow("BUTTON", "Switch To",
+                     WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10,
+                     440, 220, 30, hwnd, (HMENU)ID_BUTTON_SWITCH,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+    // --- Analytics ---
+    hBtnToggleAnalytics =
+        CreateWindow("BUTTON", "v", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10,
+                     330, 20, 20, hwnd, (HMENU)ID_BTN_TOGGLE_ANALYTICS,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+    hLabelAnalyticsTitle = CreateWindow("STATIC", "Top Apps (Time)",
+                                        WS_VISIBLE | WS_CHILD | SS_LEFT, 30,
+                                        330, 200, 20, hwnd, NULL, NULL, NULL);
 
     // ListBox (Stats)
     hListBoxStats =
@@ -254,36 +361,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                      10, 350, 220, 80, hwnd, (HMENU)ID_LISTBOX_STATS,
                      (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    // Switch Button
-    CreateWindow("BUTTON", "Switch To",
-                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10, 440,
-                 220, 30, hwnd, (HMENU)ID_BUTTON_SWITCH,
-                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+    // --- Bookmarks Launcher ---
+    hLabelBookmarksTitle =
+        CreateWindow("STATIC", "Bookmarks", WS_VISIBLE | WS_CHILD | SS_CENTER,
+                     10, 480, 220, 20, hwnd, NULL, NULL, NULL);
 
-    // --- Workspace Launcher ---
-    CreateWindow("STATIC", "Workspace Launcher",
-                 WS_VISIBLE | WS_CHILD | SS_CENTER, 10, 480, 220, 20, hwnd,
-                 NULL, NULL, NULL);
-
-    hListBoxMacros =
+    hListBoxBookmarks =
         CreateWindow("LISTBOX", NULL,
                      WS_VISIBLE | WS_CHILD | WS_VSCROLL | WS_BORDER |
                          LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
-                     10, 500, 220, 60, hwnd, (HMENU)ID_LISTBOX_MACROS,
+                     10, 500, 220, 60, hwnd, (HMENU)ID_LISTBOX_BOOKMARKS,
                      (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    CreateWindow("BUTTON", "Add Program",
-                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10, 570,
-                 105, 30, hwnd, (HMENU)ID_BTN_ADD_MACRO,
-                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+    hBtnAddBookmark =
+        CreateWindow("BUTTON", "Add Bookmark",
+                     WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 10,
+                     570, 105, 30, hwnd, (HMENU)ID_BTN_ADD_BOOKMARK,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    CreateWindow("BUTTON", "Launch All",
-                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 125, 570,
-                 105, 30, hwnd, (HMENU)ID_BTN_LAUNCH_MACROS,
-                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+    hBtnLaunchBookmarks =
+        CreateWindow("BUTTON", "Launch All",
+                     WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 125,
+                     570, 105, 30, hwnd, (HMENU)ID_BTN_LAUNCH_BOOKMARKS,
+                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    // Initial load of macros
-    UpdateMacroList();
+    // Initial load
+    UpdateBookmarkList();
+    UpdateLayout();
 
     // Status Bar
     hStatusBar = CreateWindowEx(
@@ -315,12 +419,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     case ID_BUTTON_FOCUS:
       FocusMode();
       break;
-    case ID_BTN_ADD_MACRO:
-      AddMacro();
+    case ID_BTN_ADD_BOOKMARK:
+      AddBookmark();
       break;
-    case ID_BTN_LAUNCH_MACROS:
-      macroMgr.ExecuteAll();
-      UpdateStatus("Launching workspace...");
+    case ID_BTN_LAUNCH_BOOKMARKS:
+      bookmarkMgr.ExecuteAll();
+      UpdateStatus("Launching bookmarks...");
+      break;
+    case ID_BTN_TOGGLE_STATS:
+      isStatsExpanded = !isStatsExpanded;
+      UpdateLayout();
+      break;
+    case ID_BTN_TOGGLE_ANALYTICS:
+      isAnalyticsExpanded = !isAnalyticsExpanded;
+      UpdateLayout();
       break;
     case ID_CHECKBOX_TOP:
       if (IsDlgButtonChecked(hwnd, ID_CHECKBOX_TOP)) {
