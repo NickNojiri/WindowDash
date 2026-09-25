@@ -27,4 +27,13 @@ windres resources/app.rc -O coff -o resources/app.o
 g++ -std=c++17 -D_WIN32_WINNT=0x0600 -Iinclude -o WindowDash.exe src/gui_main.cpp src/WindowManager.cpp src/SystemMonitor.cpp src/Analytics.cpp src/bookmarks/BookmarkManager.cpp resources/app.o -mwindows -static -lcomctl32 -lpdh -lpsapi -lcomdlg32
 ```
 
+## Measuring idle cost
+```powershell
+.\scripts\measure_idle.ps1 -ExePath .\build\WindowDash.exe -Label expanded -StopWhenDone
+```
+Samples CPU %, working set, handles, and GDI/USER objects for 10 minutes and
+writes raw CSV, metadata, and a summary to `measurements/`. Run once with both
+panels expanded and once with both collapsed; the difference is the cost of PDH
+sampling plus analytics.
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the threading model, handle ownership, and known defects.
