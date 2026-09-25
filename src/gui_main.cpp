@@ -2,7 +2,9 @@
 #include "SystemMonitor.h"
 #include "WindowManager.h"
 #include "bookmarks/BookmarkManager.h"
+#include "core/WindowFilter.h"
 #include <commctrl.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -30,6 +32,16 @@
 #define ID_BTN_TOGGLE_STATS 15
 #define ID_BTN_TOGGLE_ANALYTICS 16
 #define ID_TIMER_REFRESH 1001
+#define ID_TIMER_WINLIST 1002
+
+// A burst of window events (an app opening several windows, a title
+// ticking) is folded into one list refresh at most this long after the first
+// event. The timer is not re-armed by later events, so a window whose title
+// changes nonstop can't postpone the refresh indefinitely.
+#define WINLIST_THROTTLE_MS 100
+// The window list is event-driven; this is only a safety net in case an
+// event is missed (see docs/ARCHITECTURE.md).
+#define WINLIST_RESYNC_TICKS 10
 
 #define ID_HOTKEY_TILE 2001
 #define ID_HOTKEY_FOCUS 2002
@@ -58,6 +70,10 @@ HWND hBtnLaunchBookmarks;
 HWND hBtnTile;
 HWND hBtnFocus;
 HWND hBtnSwitch;
+
+std::vector<HWINEVENTHOOK> winEventHooks;
+int ticksSinceResync = 0;
+bool winListRefreshPending = false;
 
 bool isFocusMode = false;
 bool isStatsExpanded = true;
@@ -144,35 +160,26 @@ void RefreshWindowList() {
 
   // Update Label
   char buffer[64];
-  sprintf(buffer, "Active Windows: %d", (int)windows.size());
+  snprintf(buffer, sizeof(buffer), "Active Windows: %d", (int)windows.size());
   SetWindowText(hLabelCount, buffer);
 
-  // Update ListBox
-  int listCount = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
-  bool needsFullRefresh = (listCount != static_cast<int>(windows.size()));
-  if (!needsFullRefresh && selectedHwnd) {
-    bool foundSelected = false;
-    for (const auto &win : windows) {
-      if (win.hwnd == selectedHwnd) {
-        foundSelected = true;
-        break;
-      }
-    }
-    if (!foundSelected) {
-      needsFullRefresh = true;
-    }
-  }
+  // Rebuild the list box only when a window or a title changed, so the
+  // selection and scroll position survive unrelated events.
+  static std::vector<core::ListedWindow> shown;
+  std::vector<core::ListedWindow> now;
+  for (const auto &win : windows)
+    now.push_back({reinterpret_cast<std::uintptr_t>(win.hwnd), win.title});
+  if (now == shown)
+    return;
+  shown = now;
 
-  if (needsFullRefresh) {
-    SendMessage(hListBox, LB_RESETCONTENT, 0, 0);
-    for (const auto &win : windows) {
-      int index =
-          SendMessage(hListBox, LB_ADDSTRING, 0, (LPARAM)win.title.c_str());
-      SendMessage(hListBox, LB_SETITEMDATA, index, (LPARAM)win.hwnd);
-
-      if (win.hwnd == selectedHwnd) {
-        SendMessage(hListBox, LB_SETCURSEL, index, 0);
-      }
+  SendMessage(hListBox, LB_RESETCONTENT, 0, 0);
+  for (const auto &win : windows) {
+    int index =
+        SendMessage(hListBox, LB_ADDSTRING, 0, (LPARAM)win.title.c_str());
+    SendMessage(hListBox, LB_SETITEMDATA, index, (LPARAM)win.hwnd);
+    if (win.hwnd == selectedHwnd) {
+      SendMessage(hListBox, LB_SETCURSEL, index, 0);
     }
   }
 }
@@ -185,25 +192,25 @@ void UpdateSystemStats() {
   int ram = sysMon.GetMemoryUsagePercentage();
 
   char cpuBuf[32];
-  sprintf(cpuBuf, "CPU: %.1f%%", cpu);
+  snprintf(cpuBuf, sizeof(cpuBuf), "CPU: %.1f%%", cpu);
   SetWindowText(hLabelCpu, cpuBuf);
 
   char ramBuf[32];
-  sprintf(ramBuf, "RAM: %d%%", ram);
+  snprintf(ramBuf, sizeof(ramBuf), "RAM: %d%%", ram);
   SetWindowText(hLabelRam, ramBuf);
 }
 
 void UpdateAnalytics() {
+  // Count usage whether or not the panel is open; only the drawing is skipped.
+  analytics.Update();
   if (!isAnalyticsExpanded)
     return;
-
-  analytics.Update();
 
   SendMessage(hListBoxStats, LB_RESETCONTENT, 0, 0);
   auto topApps = analytics.GetTopApps(5);
   for (const auto &app : topApps) {
     char buf[128];
-    sprintf(buf, "%s: %lds", app.name.c_str(), app.seconds);
+    snprintf(buf, sizeof(buf), "%s: %llds", app.name.c_str(), app.seconds);
     SendMessage(hListBoxStats, LB_ADDSTRING, 0, (LPARAM)buf);
   }
 }
@@ -212,12 +219,7 @@ void UpdateBookmarkList() {
   SendMessage(hListBoxBookmarks, LB_RESETCONTENT, 0, 0);
   const auto &programs = bookmarkMgr.GetBookmarks();
   for (const auto &path : programs) {
-    // Extract filename from path for display
-    std::string filename = path;
-    size_t lastSlash = path.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
-      filename = path.substr(lastSlash + 1);
-    }
+    std::string filename = core::DisplayName(path);
     SendMessage(hListBoxBookmarks, LB_ADDSTRING, 0, (LPARAM)filename.c_str());
   }
 }
@@ -272,6 +274,53 @@ void FocusMode() {
   UpdateStatus("Focus Mode Activated.");
 }
 
+// --- Window events ---
+
+// Called on the UI thread (WINEVENT_OUTOFCONTEXT delivers through this
+// thread's message loop), so no locking is needed. It only arms a short
+// timer (if one isn't already pending); the refresh runs from WM_TIMER.
+void CALLBACK OnWinEvent(HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject,
+                         LONG idChild, DWORD, DWORD) {
+  if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF || !hwnd)
+    return;
+  if (GetAncestor(hwnd, GA_ROOT) != hwnd)
+    return;  // a child control, not a top-level window
+  if (!winListRefreshPending) {
+    winListRefreshPending = true;
+    SetTimer(hMainWnd, ID_TIMER_WINLIST, WINLIST_THROTTLE_MS, NULL);
+  }
+}
+
+// EVENT_OBJECT_CLOAKED / UNCLOAKED (Windows 8+), spelled out because the
+// headers only define them for _WIN32_WINNT >= 0x0602. Older Windows never
+// sends them, so hooking them there is harmless.
+static const DWORD kEventObjectCloaked = 0x8017;
+static const DWORD kEventObjectUncloaked = 0x8018;
+
+void HookWindowEvents() {
+  // Separate ranges on purpose: 0x8000-0x800C would include
+  // EVENT_OBJECT_LOCATIONCHANGE, which fires on every mouse-driven move.
+  const DWORD ranges[][2] = {
+      {EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE},        // open, close, show, hide
+      {EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE},  // title changed
+      {EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND},
+      {kEventObjectCloaked, kEventObjectUncloaked},  // virtual desktops, UWP
+  };
+  for (const auto &r : ranges) {
+    HWINEVENTHOOK h =
+        SetWinEventHook(r[0], r[1], NULL, OnWinEvent, 0, 0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    if (h)
+      winEventHooks.push_back(h);
+  }
+}
+
+void UnhookWindowEvents() {
+  for (HWINEVENTHOOK h : winEventHooks)
+    UnhookWinEvent(h);
+  winEventHooks.clear();
+}
+
 // --- GUI Logic ---
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
@@ -284,6 +333,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     // Register Global Hotkeys
     RegisterHotKey(hwnd, ID_HOTKEY_TILE, MOD_ALT | MOD_SHIFT, 'T');
     RegisterHotKey(hwnd, ID_HOTKEY_FOCUS, MOD_ALT | MOD_SHIFT, 'F');
+
+    HookWindowEvents();
 
     // --- Stats Panel (Top) ---
     hBtnToggleStats =
@@ -395,13 +446,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
         0, 0, hwnd, (HMENU)ID_STATUSBAR,
         (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
-    // Timer for auto-refresh (every 1 second)
+    RefreshWindowList();
+
+    // Stats and analytics tick every second; the window list follows events.
     SetTimer(hwnd, ID_TIMER_REFRESH, 1000, NULL);
     break;
 
   case WM_TIMER:
-    if (wParam == ID_TIMER_REFRESH) {
+    if (wParam == ID_TIMER_WINLIST) {
+      KillTimer(hwnd, ID_TIMER_WINLIST);
+      winListRefreshPending = false;
       RefreshWindowList();
+      ticksSinceResync = 0;
+    } else if (wParam == ID_TIMER_REFRESH) {
+      if (++ticksSinceResync >= WINLIST_RESYNC_TICKS) {
+        RefreshWindowList();
+        ticksSinceResync = 0;
+      }
       UpdateSystemStats();
       UpdateAnalytics();
     }
@@ -464,6 +525,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     UnregisterHotKey(hwnd, ID_HOTKEY_TILE);
     UnregisterHotKey(hwnd, ID_HOTKEY_FOCUS);
     KillTimer(hwnd, ID_TIMER_REFRESH);
+    KillTimer(hwnd, ID_TIMER_WINLIST);
+    UnhookWindowEvents();
     PostQuitMessage(0);
     return 0;
 
