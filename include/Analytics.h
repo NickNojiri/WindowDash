@@ -1,15 +1,15 @@
 #ifndef ANALYTICS_H
 #define ANALYTICS_H
 
-#include <map>
+#include "core/UsageStats.h"
+
 #include <string>
 #include <vector>
 
-struct AppUsage {
-  std::string name;
-  long seconds;
-};
+using core::AppUsage;
 
+// Win32 side of usage tracking: finds the foreground app and feeds it, with
+// the tick clock, to core::UsageStats, which does the accounting.
 class Analytics {
 public:
   Analytics();
@@ -20,7 +20,7 @@ public:
   void Load(const std::string &filename);
 
 private:
-  std::map<std::string, long> m_usageMap;
+  core::UsageStats m_stats;
   std::string GetActiveWindowProcessName();
 };
 

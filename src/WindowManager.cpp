@@ -1,8 +1,14 @@
 #include "WindowManager.h"
-#include <algorithm>
-#include <cmath>
-#include <iostream>
+#include "core/TileLayout.h"
+#include "core/WindowFilter.h"
+
+#include <cstdio>
+#include <dwmapi.h>
 #include <string>
+
+// DWMWA_CLOAKED (Windows 8+). Spelled out because the headers only define it
+// for _WIN32_WINNT >= 0x0602 and this app still targets Vista.
+static const DWORD kDwmwaCloaked = 14;
 
 WindowManager::WindowManager() { RefreshWindowList(); }
 
@@ -17,13 +23,22 @@ void WindowManager::RefreshWindowList() {
   EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(this));
 }
 
+// Suspended UWP apps and virtual-desktop windows are "visible" but cloaked:
+// on screen they don't exist, so tiling them leaves empty holes.
+static bool IsCloaked(HWND hwnd) {
+  DWORD cloaked = 0;
+  return SUCCEEDED(DwmGetWindowAttribute(hwnd, kDwmwaCloaked, &cloaked,
+                                         sizeof(cloaked))) &&
+         cloaked != 0;
+}
+
 BOOL CALLBACK WindowManager::EnumWindowsProc(HWND hwnd, LPARAM lParam) {
   WindowManager *pThis = reinterpret_cast<WindowManager *>(lParam);
 
-  if (!IsWindowVisible(hwnd))
+  // Minimized windows are kept (not filtered with IsIconic) so Focus Mode
+  // can restore them.
+  if (!IsWindowVisible(hwnd) || IsCloaked(hwnd))
     return TRUE;
-
-  // Removed IsIconic check so we can track and restore minimized windows
 
   int length = GetWindowTextLength(hwnd);
   if (length == 0)
@@ -33,16 +48,10 @@ BOOL CALLBACK WindowManager::EnumWindowsProc(HWND hwnd, LPARAM lParam) {
   GetWindowText(hwnd, &buffer[0], length + 1);
   std::string title(&buffer[0]);
 
-  if (title == "Program Manager" || title == "Settings" ||
-      title == "Microsoft Text Input Application" ||
-      title == "Window Manager" || title == "Window Dash")
+  if (core::IsExcludedTitle(title))
     return TRUE;
 
-  WindowInfo info;
-  info.hwnd = hwnd;
-  info.title = title;
-  pThis->m_visibleWindows.push_back(info);
-
+  pThis->m_visibleWindows.push_back({hwnd, title});
   return TRUE;
 }
 
@@ -52,77 +61,38 @@ void WindowManager::TileWindows(HWND owner) {
     return;
 
   RECT workArea;
-  if (owner) {
-    HMONITOR hMon = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(MONITORINFO);
-    if (GetMonitorInfo(hMon, &mi)) {
-      workArea = mi.rcWork;
-    } else {
-      SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
-    }
+  MONITORINFO mi = {};
+  mi.cbSize = sizeof(MONITORINFO);
+  if (owner &&
+      GetMonitorInfo(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mi)) {
+    workArea = mi.rcWork;
   } else {
     SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
   }
 
-  int screenX = workArea.left;
-  int screenY = workArea.top;
-  int screenW = workArea.right - workArea.left;
-  int screenH = workArea.bottom - workArea.top;
+  const core::Rect area{workArea.left, workArea.top,
+                        workArea.right - workArea.left,
+                        workArea.bottom - workArea.top};
+  const int count = static_cast<int>(m_visibleWindows.size());
+  const core::TilePlan plan = core::PlanTiles(count, area);
 
-  int count = static_cast<int>(m_visibleWindows.size());
-
-  // Debug logging
   char debugBuf[256];
-  sprintf(debugBuf, "[WindowDash] Tiling %d windows. Screen: %d,%d %dx%d\n",
-          count, screenX, screenY, screenW, screenH);
+  snprintf(debugBuf, sizeof(debugBuf),
+           "[WindowDash] Tiling %d windows. Screen: %d,%d %dx%d\n", count,
+           area.x, area.y, area.w, area.h);
   OutputDebugString(debugBuf);
 
-  int cols = static_cast<int>(std::ceil(std::sqrt(count)));
-  int rows = static_cast<int>(std::ceil((double)count / cols));
-
-  if (count == 3) {
-    cols = 2;
-    rows = 2;
-  }
-
-  int winW = screenW / cols;
-  int winH = screenH / rows;
-
   for (int i = 0; i < count; ++i) {
-    int row = i / cols;
-    int col = i % cols;
-    int x = screenX + (col * winW);
-    int y = screenY + (row * winH);
-
-    sprintf(debugBuf, "[WindowDash] Window %d: %s\n", i,
-            m_visibleWindows[i].title.c_str());
-    OutputDebugString(debugBuf);
-
-    if (count == 3) {
-      if (i == 0) {
-        MoveWindow(m_visibleWindows[i].hwnd, screenX, screenY, screenW / 2,
-                   screenH, TRUE);
-      } else if (i == 1) {
-        MoveWindow(m_visibleWindows[i].hwnd, screenX + (screenW / 2), screenY,
-                   screenW / 2, screenH / 2, TRUE);
-      } else {
-        MoveWindow(m_visibleWindows[i].hwnd, screenX + (screenW / 2),
-                   screenY + (screenH / 2), screenW / 2, screenH / 2, TRUE);
-      }
-    } else if (count == 2) {
-      if (i == 0)
-        MoveWindow(m_visibleWindows[i].hwnd, screenX, screenY, screenW / 2,
-                   screenH, TRUE);
-      else
-        MoveWindow(m_visibleWindows[i].hwnd, screenX + (screenW / 2), screenY,
-                   screenW / 2, screenH, TRUE);
-    } else if (count == 1) {
-      ShowWindow(m_visibleWindows[i].hwnd, SW_MAXIMIZE);
+    HWND hwnd = m_visibleWindows[i].hwnd;
+    // Restore first: moving a maximized or minimized window and restoring it
+    // afterwards snaps it back to its old size, undoing the tile.
+    ShowWindow(hwnd, SW_RESTORE);
+    if (plan.maximizeSingle) {
+      ShowWindow(hwnd, SW_MAXIMIZE);
     } else {
-      MoveWindow(m_visibleWindows[i].hwnd, x, y, winW, winH, TRUE);
+      const core::Rect &r = plan.rects[i];
+      MoveWindow(hwnd, r.x, r.y, r.w, r.h, TRUE);
     }
-    ShowWindow(m_visibleWindows[i].hwnd, SW_RESTORE);
   }
 }
 
