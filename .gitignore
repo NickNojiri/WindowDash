@@ -16,3 +16,7 @@ Makefile
 # Data files (macros and analytics are user-specific)
 macros.dat
 analytics.dat
+bookmarks.dat
+
+# Build directories
+build*/

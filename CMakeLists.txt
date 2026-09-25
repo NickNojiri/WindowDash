@@ -1,27 +1,48 @@
-cmake_minimum_required(VERSION 3.10)
-project(Resizer VERSION 1.0)
+cmake_minimum_required(VERSION 3.16)
+project(WindowDash VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(MSVC)
+  set(WD_WARNINGS /W4 /permissive-)
+else()
+  set(WD_WARNINGS -Wall -Wextra -Wpedantic)
+endif()
 
-# Source files
-file(GLOB_RECURSE SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+# Win32-free logic (layout, usage accounting, list rules). Builds and is
+# tested on any platform.
+add_library(wd_core STATIC
+  src/core/TileLayout.cpp
+  src/core/UsageStats.cpp
+  src/core/WindowFilter.cpp)
+target_include_directories(wd_core PUBLIC include)
+target_compile_options(wd_core PRIVATE ${WD_WARNINGS})
 
-# Executable for GUI version
-add_executable(resizer_gui ${SRC_FILES})
+enable_testing()
+add_executable(test_core tests/test_core.cpp)
+target_link_libraries(test_core PRIVATE wd_core)
+target_compile_options(test_core PRIVATE ${WD_WARNINGS})
+add_test(NAME core COMMAND test_core)
 
-target_link_libraries(resizer_gui user32 comctl32 gdi32 pdh psapi comdlg32)
-
-# Copy resources (icons) to output directory
-add_custom_command(TARGET resizer_gui POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/resources $<TARGET_FILE_DIR:resizer_gui>/resources)
-
-# Ensure we can use Windows headers
+# The Windows app itself.
 if(WIN32)
-    add_definitions(-D_WIN32_WINNT=0x0600)
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+  enable_language(RC)
+  add_executable(WindowDash WIN32
+    src/gui_main.cpp
+    src/WindowManager.cpp
+    src/SystemMonitor.cpp
+    src/Analytics.cpp
+    src/bookmarks/BookmarkManager.cpp
+    resources/app.rc)
+  target_compile_definitions(WindowDash PRIVATE
+    _WIN32_WINNT=0x0600 _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(WindowDash PRIVATE ${WD_WARNINGS})
+  target_link_libraries(WindowDash PRIVATE
+    wd_core user32 comctl32 gdi32 pdh psapi comdlg32 dwmapi)
+  if(MINGW)
+    # One self-contained .exe: no libstdc++/libgcc DLLs to ship alongside.
+    target_link_options(WindowDash PRIVATE -static)
+  endif()
 endif()

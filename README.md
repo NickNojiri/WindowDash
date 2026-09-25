@@ -9,9 +9,29 @@ A powerful window management dashboard for Windows.
 - **Analytics**: Track your most used applications.
 - **Workspace Launcher**: Create and launch sets of programs with one click.
 
-## Build Instructions
-1.  Ensure you have `g++` (MinGW) installed.
-2.  Run the build task in VS Code or use the following command:
-    ```bash
-    g++ -std=c++17 -D_WIN32_WINNT=0x0600 -Iinclude -o WindowDash.exe src/gui_main.cpp src/WindowManager.cpp src/SystemMonitor.cpp src/Analytics.cpp src/MacroManager.cpp resources/app.o -lcomctl32 -lpdh -lpsapi -mwindows -lcomdlg32
-    ```
+## Build
+
+Needs CMake 3.16+ and either Visual Studio 2019+ or MinGW-w64.
+
+```bash
+cmake -S . -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release        # unit tests for the Win32-free core
+```
+
+The app is `build/Release/WindowDash.exe` (Visual Studio) or `build/WindowDash.exe`
+(MinGW, a single static .exe). To cross-compile from Linux:
+
+```bash
+cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build-win
+```
+
+On Linux, `cmake -S . -B build` builds and tests only the core library. CI
+(`.github/workflows/ci.yml`) does all three builds, runs the tests, launches the app for
+5 seconds on Windows, and uploads the `.exe`. A `v*` tag attaches it to a GitHub release.
+
+## How it works
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the modules, the threading
+model, how window events flow, and who owns each native handle.
