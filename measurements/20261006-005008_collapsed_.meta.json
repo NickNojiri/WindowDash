@@ -1,0 +1,17 @@
+﻿{
+    "label":  "collapsed\\",
+    "started_local":  "2026-10-06T00:50:08.0099019-07:00",
+    "duration_sec":  600,
+    "interval_sec":  1,
+    "warmup_sec":  10,
+    "pid":  26392,
+    "exe_path":  "C:\\Users\\17143\\WindowDash\\WindowDash.exe",
+    "exe_sha256":  "1AA54390B069165FDC3DEEF7A1CCA390AE5DA6A66C65440F4ACEB81A3F327CB3",
+    "git_sha":  "24029140cc4b68fa2df8ea753cb3a7bf37673bed",
+    "cpu_model":  "AMD Ryzen 7 7800X3D 8-Core Processor",
+    "logical_cpus":  16,
+    "os":  "Microsoft Windows 11 Home 10.0.26200",
+    "ram_gb":  31.2,
+    "powershell":  "5.1.26100.9444",
+    "gui_counts_available":  true
+}
