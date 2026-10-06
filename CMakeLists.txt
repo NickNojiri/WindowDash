@@ -1,27 +1,42 @@
-cmake_minimum_required(VERSION 3.10)
-project(Resizer VERSION 1.0)
+cmake_minimum_required(VERSION 3.16)
+project(WindowDash VERSION 1.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(NOT WIN32)
+  message(FATAL_ERROR "WindowDash is a Win32 app. Build with MinGW-w64 on "
+                      "Windows, or cross-compile with CMAKE_SYSTEM_NAME=Windows.")
+endif()
 
-# Source files
-file(GLOB_RECURSE SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+# Logic shared by the app and the unit tests.
+# MacroManager.cpp is intentionally not built: it is dead code, superseded by
+# BookmarkManager (see docs/ARCHITECTURE.md).
+add_library(windowdash_core STATIC
+    src/WindowManager.cpp
+    src/SystemMonitor.cpp
+    src/Analytics.cpp
+    src/bookmarks/BookmarkManager.cpp)
+target_include_directories(windowdash_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(windowdash_core PUBLIC _WIN32_WINNT=0x0600 _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(windowdash_core PUBLIC user32 gdi32 pdh psapi)
 
-# Executable for GUI version
-add_executable(resizer_gui ${SRC_FILES})
+# WIN32 selects the GUI subsystem (-mwindows), so no console window opens.
+add_executable(WindowDash WIN32 src/gui_main.cpp resources/app.rc)
+target_link_libraries(WindowDash PRIVATE windowdash_core comctl32 comdlg32)
 
-target_link_libraries(resizer_gui user32 comctl32 gdi32 pdh psapi comdlg32)
+if(MINGW)
+  # Static runtime so the exe runs on a machine without MinGW DLLs.
+  target_link_options(WindowDash PRIVATE -static)
+endif()
 
-# Copy resources (icons) to output directory
-add_custom_command(TARGET resizer_gui POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/resources $<TARGET_FILE_DIR:resizer_gui>/resources)
-
-# Ensure we can use Windows headers
-if(WIN32)
-    add_definitions(-D_WIN32_WINNT=0x0600)
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(windowdash_tests tests/test_main.cpp)
+  target_link_libraries(windowdash_tests PRIVATE windowdash_core)
+  if(MINGW)
+    target_link_options(windowdash_tests PRIVATE -static)
+  endif()
+  # The test exe moves into its own temp directory before touching *.dat.
+  add_test(NAME windowdash_tests COMMAND windowdash_tests)
 endif()
